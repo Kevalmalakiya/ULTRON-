@@ -22,9 +22,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 
     buildFeatures {
         compose = true
@@ -43,6 +40,15 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+}
+
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(
+            org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget("17")
+        )
     }
 }
 
