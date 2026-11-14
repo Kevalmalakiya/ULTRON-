@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
-
+      - ultron-integration
+  pull_request:
+    branches:
+      - main
+      - ultron-integration
   workflow_dispatch:
 
 permissions:

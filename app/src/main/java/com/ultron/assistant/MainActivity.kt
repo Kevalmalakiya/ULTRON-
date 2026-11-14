@@ -1,6 +1,11 @@
 package com.ultron.assistant
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.widget.Toast
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +21,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,6 +53,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -55,6 +62,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Date
+import java.util.Locale
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -151,6 +159,94 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private class UltronSpeechController(
+    context: Context,
+    private val onSpeakingChanged: (Long?) -> Unit
+) {
+    private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var engine: TextToSpeech? = null
+    @Volatile private var ready = false
+    @Volatile private var activeMessageId: Long? = null
+    @Volatile private var activeUtteranceId: String? = null
+
+    init {
+        engine = TextToSpeech(appContext) { status ->
+            ready = status == TextToSpeech.SUCCESS
+            if (ready) {
+                engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) = Unit
+                    override fun onDone(utteranceId: String?) = finishUtterance(utteranceId)
+                    override fun onError(utteranceId: String?) = finishUtterance(utteranceId)
+                })
+            }
+        }
+    }
+
+    fun speak(text: String, messageId: Long) {
+        val tts = engine
+        if (tts == null || !ready) {
+            Toast.makeText(
+                appContext,
+                "Text-to-Speech is not ready. Check the installed speech engine.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        val isHindiScript = text.any { it in '\u0900'..'\u097F' }
+        val preferredLocale = if (isHindiScript) Locale("hi", "IN") else Locale("en", "IN")
+        var languageStatus = tts.setLanguage(preferredLocale)
+        if (languageStatus < TextToSpeech.LANG_AVAILABLE) {
+            languageStatus = tts.setLanguage(if (isHindiScript) Locale("hi") else Locale.ENGLISH)
+        }
+        if (languageStatus < TextToSpeech.LANG_AVAILABLE) {
+            Toast.makeText(
+                appContext,
+                "Install a supported Hindi or English voice in Android Text-to-Speech settings.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val utteranceId = "ultron-$messageId"
+        activeMessageId = messageId
+        activeUtteranceId = utteranceId
+        onSpeakingChanged(messageId)
+        val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            activeMessageId = null
+            activeUtteranceId = null
+            onSpeakingChanged(null)
+            Toast.makeText(appContext, "Unable to start speech playback.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun stop() {
+        engine?.stop()
+        activeMessageId = null
+        activeUtteranceId = null
+        onSpeakingChanged(null)
+    }
+
+    private fun finishUtterance(utteranceId: String?) {
+        if (utteranceId != null && utteranceId == activeUtteranceId) {
+            activeMessageId = null
+            activeUtteranceId = null
+            mainHandler.post { onSpeakingChanged(null) }
+        }
+    }
+
+    fun shutdown() {
+        engine?.stop()
+        engine?.shutdown()
+        engine = null
+        ready = false
+        activeMessageId = null
+        activeUtteranceId = null
+    }
+}
+
 @Composable
 private fun UltronApp() {
     val context = LocalContext.current.applicationContext
@@ -179,11 +275,32 @@ private fun UltronApp() {
 
     val listState = rememberLazyListState()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    var speakingMessageId by remember { mutableStateOf<Long?>(null) }
+    val speechController = remember(context) {
+        UltronSpeechController(context) { activeId ->
+            mainHandler.post { speakingMessageId = activeId }
+        }
+    }
+    DisposableEffect(speechController) {
+        onDispose { speechController.shutdown() }
+    }
 
     val apiConfigured = apiBaseUrl.isNotBlank() && apiKey.isNotBlank()
 
     fun saveHistory() {
         ChatHistory.save(context, messages)
+    }
+
+    fun copyConversation() {
+        val transcript = messages.joinToString("\n\n") { message ->
+            val speaker = if (message.fromUser) "YOU" else "ULTRON"
+            val timestamp = DateFormat.format("dd MMM yyyy, HH:mm", Date(message.createdAt))
+            "$speaker  •  $timestamp\n${message.body}"
+        }
+        if (transcript.isBlank()) return
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("ULTRON conversation", transcript))
+        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
     }
 
     fun sendMessage() {
@@ -273,6 +390,7 @@ private fun UltronApp() {
     }
 
     fun clearHistory() {
+        speechController.stop()
         messages.clear()
         messages.addAll(ChatHistory.welcome())
         saveHistory()
@@ -368,7 +486,13 @@ private fun UltronApp() {
                     items = messages,
                     key = { it.id }
                 ) { message ->
-                    UltronMessageBubble(message)
+                    UltronMessageBubble(
+                        message = message,
+                        isSpeaking = speakingMessageId == message.id,
+                        onCopyConversation = { copyConversation() },
+                        onSpeak = { speechController.speak(message.body, message.id) },
+                        onStop = { speechController.stop() }
+                    )
                 }
             }
 
@@ -435,11 +559,10 @@ private fun UltronTopBar(
                 .border(1.dp, Color(0xFF873247), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                "U",
-                color = RED,
-                fontSize = 27.sp,
-                fontWeight = FontWeight.Black
+            Image(
+                painter = painterResource(id = R.drawable.ic_ultron_mark),
+                contentDescription = "ULTRON emblem",
+                modifier = Modifier.fillMaxSize().padding(4.dp)
             )
         }
 
@@ -795,7 +918,13 @@ private fun NeuralCore() {
 }
 
 @Composable
-private fun UltronMessageBubble(message: ChatMessage) {
+private fun UltronMessageBubble(
+    message: ChatMessage,
+    isSpeaking: Boolean,
+    onCopyConversation: () -> Unit,
+    onSpeak: () -> Unit,
+    onStop: () -> Unit
+) {
     val user = message.fromUser
 
     val bubbleShape = RoundedCornerShape(
@@ -854,8 +983,45 @@ private fun UltronMessageBubble(message: ChatMessage) {
                 fontSize = 14.sp,
                 lineHeight = 21.sp
             )
+            if (!user && !message.body.startsWith("Connecting to ULTRON Cloud")) {
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MessageActionButton(
+                        label = "COPY CHAT",
+                        active = false,
+                        onClick = onCopyConversation
+                    )
+                    MessageActionButton(
+                        label = if (isSpeaking) "STOP AUDIO" else "READ ALOUD",
+                        active = isSpeaking,
+                        onClick = if (isSpeaking) onStop else onSpeak
+                    )
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun MessageActionButton(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    val accent = if (active) RED_SOFT else Color(0xFF9BAEC0)
+    Text(
+        text = label,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(if (active) Color(0xFF351820) else Color(0xFF192431))
+            .border(1.dp, if (active) Color(0xFF873247) else Color(0xFF34465A), CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+        color = accent,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = .6.sp
+    )
 }
 
 @Composable
@@ -869,10 +1035,10 @@ private fun UltronComposer(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 9.dp)
-            .clip(CircleShape)
+            .clip(RoundedCornerShape(25.dp))
             .background(PANEL)
-            .border(1.dp, Color(0xFF34465A), CircleShape)
-            .padding(horizontal = 9.dp, vertical = 7.dp),
+            .border(1.dp, Color(0xFF34465A), RoundedCornerShape(25.dp))
+            .padding(horizontal = 11.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
