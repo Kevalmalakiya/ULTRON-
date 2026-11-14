@@ -2,18 +2,26 @@ package com.ultron.assistant
 
 import android.content.Context
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.format.DateFormat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,73 +30,81 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawArc
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.*
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.util.Date
 import org.json.JSONArray
 import org.json.JSONObject
 
-private val BG = Color(0xFF080A10)
-private val PANEL = Color(0xFF111722)
-private val PANEL_LIGHT = Color(0xFF192330)
+private val BG = Color(0xFF070A10)
+private val PANEL = Color(0xFF111925)
+private val PANEL_LIGHT = Color(0xFF1B2735)
 private val RED = Color(0xFFFF354F)
-private val RED_DARK = Color(0xFF6D1D2B)
+private val RED_SOFT = Color(0xFFFF7182)
 private val WHITE = Color(0xFFEAF0F7)
-private val MUTED = Color(0xFF8C9AAA)
-private val GREEN = Color(0xFF48D99A)
+private val MUTED = Color(0xFF8999AA)
+private val GREEN = Color(0xFF49DDA0)
+private val ORANGE = Color(0xFFFFB85C)
 
 private data class ChatMessage(
+    val id: Long,
     val body: String,
     val fromUser: Boolean,
     val createdAt: Long
 )
 
 private object ChatHistory {
-
     private const val PREFS = "ultron_local_history"
     private const val KEY = "messages"
 
     fun welcome(): List<ChatMessage> = listOf(
         ChatMessage(
-            body = "Welcome back. I am ULTRON. My interface is ready. Cloud AI connection is pending.",
+            id = System.nanoTime(),
+            body = "ULTRON online. Configure the Colab Cloud API in Settings to begin the conversation.",
             fromUser = false,
             createdAt = System.currentTimeMillis()
         )
     )
 
     fun load(context: Context): List<ChatMessage> {
-        val raw = context
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY, null)
 
         if (raw.isNullOrBlank()) return welcome()
 
         return runCatching {
             val array = JSONArray(raw)
-
             buildList {
-                for (index in 0 until array.length()) {
-                    val item = array.optJSONObject(index) ?: continue
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
                     val body = item.optString("body").trim()
-
                     if (body.isNotEmpty()) {
                         add(
                             ChatMessage(
+                                id = item.optLong("id", System.nanoTime()),
                                 body = body,
                                 fromUser = item.optBoolean("fromUser", false),
                                 createdAt = item.optLong(
@@ -109,14 +125,14 @@ private object ChatHistory {
         messages.takeLast(200).forEach { message ->
             array.put(
                 JSONObject()
+                    .put("id", message.id)
                     .put("body", message.body)
                     .put("fromUser", message.fromUser)
                     .put("createdAt", message.createdAt)
             )
         }
 
-        context
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY, array.toString())
             .apply()
@@ -124,23 +140,33 @@ private object ChatHistory {
 }
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = android.graphics.Color.rgb(8, 10, 16)
-        window.navigationBarColor = android.graphics.Color.rgb(8, 10, 16)
+        window.statusBarColor = android.graphics.Color.rgb(7, 10, 16)
+        window.navigationBarColor = android.graphics.Color.rgb(7, 10, 16)
 
         setContent {
-            UltronApplication()
+            UltronApp()
         }
     }
 }
 
 @Composable
-private fun UltronApplication() {
-
+private fun UltronApp() {
     val context = LocalContext.current.applicationContext
+
+    val apiPreferences = remember(context) {
+        context.getSharedPreferences("ultron_api_config", Context.MODE_PRIVATE)
+    }
+
+    var apiBaseUrl by remember {
+        mutableStateOf(apiPreferences.getString("base_url", "") ?: "")
+    }
+
+    var apiKey by remember {
+        mutableStateOf(apiPreferences.getString("api_key", "") ?: "")
+    }
 
     val messages = remember(context) {
         mutableStateListOf<ChatMessage>().apply {
@@ -150,37 +176,107 @@ private fun UltronApplication() {
 
     var input by rememberSaveable { mutableStateOf("") }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var isSending by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    val apiConfigured = apiBaseUrl.isNotBlank() && apiKey.isNotBlank()
+
+    fun saveHistory() {
+        ChatHistory.save(context, messages)
+    }
 
     fun sendMessage() {
         val cleanMessage = input.trim()
-        if (cleanMessage.isEmpty()) return
+        if (cleanMessage.isEmpty() || isSending) return
 
-        messages.add(
-            ChatMessage(
-                body = cleanMessage,
-                fromUser = true,
-                createdAt = System.currentTimeMillis()
-            )
+        val userMessage = ChatMessage(
+            id = System.nanoTime(),
+            body = cleanMessage,
+            fromUser = true,
+            createdAt = System.currentTimeMillis()
         )
 
+        messages.add(userMessage)
+        input = ""
+        saveHistory()
+
+        val cleanBaseUrl = apiBaseUrl.trim().trimEnd('/')
+        val cleanApiKey = apiKey.trim()
+
+        if (cleanBaseUrl.isBlank() || cleanApiKey.isBlank()) {
+            messages.add(
+                ChatMessage(
+                    id = System.nanoTime(),
+                    body = "Cloud API is not configured. Open Settings and enter the HTTPS API URL and API Key from your running Colab notebook.",
+                    fromUser = false,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            saveHistory()
+            return
+        }
+
+        val requestMessages = messages
+            .takeLast(12)
+            .map { message ->
+                UltronApiMessage(
+                    role = if (message.fromUser) "user" else "assistant",
+                    content = message.body
+                )
+            }
+
+        val placeholderId = System.nanoTime()
+
         messages.add(
             ChatMessage(
-                body = "Message saved locally. The ULTRON Cloud API is not connected in V1, so this message has not been sent to Qwen or Google Colab.",
+                id = placeholderId,
+                body = "Connecting to ULTRON Cloud...",
                 fromUser = false,
                 createdAt = System.currentTimeMillis()
             )
         )
 
-        ChatHistory.save(context, messages)
-        input = ""
+        isSending = true
+
+        Thread {
+            val responseText = try {
+                UltronApiClient.sendChat(
+                    baseUrl = cleanBaseUrl,
+                    apiKey = cleanApiKey,
+                    messages = requestMessages
+                )
+            } catch (error: Exception) {
+                "Connection failed. Check that Colab and Cloudflare Tunnel are running, then verify the API URL and key in Settings.\n\nDetails: ${
+                    error.message ?: error.javaClass.simpleName
+                }"
+            }
+
+            mainHandler.post {
+                val responseIndex = messages.indexOfFirst {
+                    it.id == placeholderId
+                }
+
+                if (responseIndex >= 0) {
+                    messages[responseIndex] = ChatMessage(
+                        id = placeholderId,
+                        body = responseText,
+                        fromUser = false,
+                        createdAt = System.currentTimeMillis()
+                    )
+                }
+
+                isSending = false
+                saveHistory()
+            }
+        }.start()
     }
 
     fun clearHistory() {
         messages.clear()
         messages.addAll(ChatHistory.welcome())
-        ChatHistory.save(context, messages)
+        saveHistory()
     }
 
     LaunchedEffect(messages.size) {
@@ -203,13 +299,16 @@ private fun UltronApplication() {
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(BG, Color(0xFF0D111A), BG)
+                        listOf(
+                            Color(0xFF090D15),
+                            BG,
+                            Color(0xFF0C111A)
+                        )
                     )
                 )
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
-
             UltronTopBar(
                 onSettings = { settingsOpen = true },
                 onClear = { clearHistory() }
@@ -219,7 +318,7 @@ private fun UltronApplication() {
                 Modifier
                     .fillMaxWidth()
                     .height(1.dp)
-                    .background(Color(0xFF26313F))
+                    .background(Color(0xFF293646))
             )
 
             LazyColumn(
@@ -228,37 +327,37 @@ private fun UltronApplication() {
                     .weight(1f)
                     .fillMaxWidth(),
                 contentPadding = PaddingValues(
-                    start = 17.dp,
-                    end = 17.dp,
-                    top = 18.dp,
-                    bottom = 18.dp
+                    horizontal = 16.dp,
+                    vertical = 15.dp
                 ),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-
                 item {
-                    UltronIdentityPanel()
+                    UltronHeroPanel(
+                        apiConfigured = apiConfigured,
+                        isSending = isSending
+                    )
                 }
 
                 item {
                     Row(
-                        Modifier
+                        modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 3.dp),
+                            .padding(top = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             "CONVERSATION",
                             color = WHITE,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
                             letterSpacing = 2.sp
                         )
 
                         Spacer(Modifier.weight(1f))
 
                         Text(
-                            "LOCAL HISTORY",
+                            "${messages.size} MESSAGES",
                             color = MUTED,
                             fontSize = 9.sp,
                             letterSpacing = 1.sp
@@ -266,10 +365,10 @@ private fun UltronApplication() {
                     }
                 }
 
-                itemsIndexed(
+                items(
                     items = messages,
-                    key = { index, message -> "${message.createdAt}-$index" }
-                ) { _, message ->
+                    key = { it.id }
+                ) { message ->
                     UltronMessageBubble(message)
                 }
             }
@@ -277,16 +376,21 @@ private fun UltronApplication() {
             UltronComposer(
                 value = input,
                 onValueChange = { input = it },
-                onSend = { sendMessage() }
+                onSend = { sendMessage() },
+                isSending = isSending
             )
 
             Text(
-                text = "V1.0.0  •  CLOUD API NOT CONNECTED  •  ULTRON",
+                text = if (apiConfigured) {
+                    "CLOUD API CONFIGURED  •  ULTRON"
+                } else {
+                    "API SETUP REQUIRED  •  OPEN SETTINGS"
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 8.dp, top = 2.dp),
+                    .padding(top = 2.dp, bottom = 8.dp),
                 textAlign = TextAlign.Center,
-                color = MUTED,
+                color = if (apiConfigured) GREEN else ORANGE,
                 fontSize = 8.sp,
                 letterSpacing = 1.1.sp
             )
@@ -295,6 +399,19 @@ private fun UltronApplication() {
 
     if (settingsOpen) {
         UltronSettingsDialog(
+            currentBaseUrl = apiBaseUrl,
+            currentApiKey = apiKey,
+            onSave = { newUrl, newKey ->
+                apiBaseUrl = newUrl.trim().trimEnd('/')
+                apiKey = newKey.trim()
+
+                apiPreferences.edit()
+                    .putString("base_url", apiBaseUrl)
+                    .putString("api_key", apiKey)
+                    .apply()
+
+                settingsOpen = false
+            },
             onDismiss = { settingsOpen = false }
         )
     }
@@ -308,26 +425,21 @@ private fun UltronTopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 19.dp, vertical = 13.dp),
+            .padding(horizontal = 17.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-
         Box(
-            Modifier
-                .size(43.dp)
+            modifier = Modifier
+                .size(44.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .background(Color(0xFF24131A))
-                .border(
-                    1.dp,
-                    Color(0xFF7A2838),
-                    RoundedCornerShape(14.dp)
-                ),
+                .background(Color(0xFF28131B))
+                .border(1.dp, Color(0xFF873247), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 "U",
                 color = RED,
-                fontSize = 25.sp,
+                fontSize = 27.sp,
                 fontWeight = FontWeight.Black
             )
         }
@@ -335,7 +447,6 @@ private fun UltronTopBar(
         Spacer(Modifier.width(11.dp))
 
         Column(Modifier.weight(1f)) {
-
             Text(
                 "ULTRON",
                 color = WHITE,
@@ -344,23 +455,12 @@ private fun UltronTopBar(
                 letterSpacing = 3.sp
             )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFFFFB85C))
-                )
-
-                Spacer(Modifier.width(6.dp))
-
-                Text(
-                    "PERSONAL AI INTERFACE",
-                    color = MUTED,
-                    fontSize = 8.sp,
-                    letterSpacing = 1.sp
-                )
-            }
+            Text(
+                "PERSONAL AI SYSTEM",
+                color = MUTED,
+                fontSize = 8.sp,
+                letterSpacing = 1.5.sp
+            )
         }
 
         Text(
@@ -368,9 +468,9 @@ private fun UltronTopBar(
             modifier = Modifier
                 .clip(CircleShape)
                 .clickable { onClear() }
-                .padding(11.dp),
+                .padding(10.dp),
             color = MUTED,
-            fontSize = 20.sp
+            fontSize = 21.sp
         )
 
         Text(
@@ -378,44 +478,41 @@ private fun UltronTopBar(
             modifier = Modifier
                 .clip(CircleShape)
                 .clickable { onSettings() }
-                .padding(11.dp),
+                .padding(10.dp),
             color = WHITE,
-            fontSize = 20.sp
+            fontSize = 21.sp
         )
     }
 }
 
 @Composable
-private fun UltronIdentityPanel() {
-
+private fun UltronHeroPanel(
+    apiConfigured: Boolean,
+    isSending: Boolean
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(25.dp))
+            .clip(RoundedCornerShape(24.dp))
             .background(
-                Brush.verticalGradient(
+                Brush.linearGradient(
                     listOf(
-                        Color(0xFF202A36),
-                        Color(0xFF111923),
+                        Color(0xFF202C3A),
+                        Color(0xFF111A26),
                         Color(0xFF0B1019)
                     )
                 )
             )
             .border(
                 1.dp,
-                Color(0xFF394958),
-                RoundedCornerShape(25.dp)
+                Color(0xFF3B4D5F),
+                RoundedCornerShape(24.dp)
             )
-            .padding(horizontal = 15.dp, vertical = 15.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(15.dp)
     ) {
-
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "NEURAL CORE",
+                "NEURAL INTERFACE",
                 color = MUTED,
                 fontSize = 9.sp,
                 letterSpacing = 2.sp
@@ -424,67 +521,82 @@ private fun UltronIdentityPanel() {
             Spacer(Modifier.weight(1f))
 
             Text(
-                "UNIT 01",
-                color = RED,
+                "MK-I",
+                color = RED_SOFT,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp
+                letterSpacing = 2.sp
             )
         }
 
         Spacer(Modifier.height(8.dp))
 
-        UltronAvatar(
+        Row(
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            NeuralCore()
+
+            Spacer(Modifier.width(14.dp))
+
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "I AM",
+                    color = MUTED,
+                    fontSize = 9.sp,
+                    letterSpacing = 2.sp
+                )
+
+                Text(
+                    "ULTRON",
+                    color = WHITE,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp
+                )
+
+                Spacer(Modifier.height(5.dp))
+
+                Text(
+                    "Personal Intelligence Interface",
+                    color = MUTED,
+                    fontSize = 10.sp,
+                    lineHeight = 15.sp
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                StatusPill(
+                    label = when {
+                        isSending -> "PROCESSING REQUEST"
+                        apiConfigured -> "API CONFIGURED"
+                        else -> "AWAITING API SETUP"
+                    },
+                    active = apiConfigured || isSending
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Box(
             Modifier
                 .fillMaxWidth()
-                .height(218.dp)
+                .height(1.dp)
+                .background(Color(0xFF344354))
         )
 
-        Text(
-            "ULTRON",
-            color = WHITE,
-            fontSize = 25.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 5.sp
-        )
+        Spacer(Modifier.height(10.dp))
 
-        Spacer(Modifier.height(5.dp))
-
-        Text(
-            "THE PERSONAL INTELLIGENCE INTERFACE",
-            color = MUTED,
-            fontSize = 9.sp,
-            letterSpacing = 1.3.sp,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(Modifier.height(13.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .clip(CircleShape)
-                .background(Color(0xFF241D1B))
-                .border(
-                    1.dp,
-                    Color(0xFF6A4430),
-                    CircleShape
-                )
-                .padding(horizontal = 12.dp, vertical = 7.dp)
-        ) {
-            Box(
-                Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFFFB85C))
-            )
-
-            Spacer(Modifier.width(7.dp))
-
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MiniMetric("ENGINE", "QWEN")
+            Spacer(Modifier.width(18.dp))
+            MiniMetric("CONNECTION", if (apiConfigured) "CONFIGURED" else "PENDING")
+            Spacer(Modifier.weight(1f))
             Text(
-                "WAITING FOR CLOUD CONNECTION",
-                color = Color(0xFFFFC77B),
+                "SYSTEM READY",
+                color = if (apiConfigured) GREEN else ORANGE,
                 fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp
             )
         }
@@ -492,466 +604,244 @@ private fun UltronIdentityPanel() {
 }
 
 @Composable
-private fun UltronAvatar(modifier: Modifier = Modifier) {
-
-    Canvas(modifier) {
-
-        val scale = minOf(
-            size.width / 320f,
-            size.height / 260f
+private fun MiniMetric(
+    title: String,
+    value: String
+) {
+    Column {
+        Text(
+            title,
+            color = MUTED,
+            fontSize = 7.sp,
+            letterSpacing = 1.sp
         )
+        Text(
+            value,
+            color = WHITE,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
 
-        val centerX = size.width / 2f
-        val offsetY = (size.height - 260f * scale) / 2f
-
-        fun point(x: Float, y: Float): Offset {
-            return Offset(
-                centerX + x * scale,
-                offsetY + y * scale
+@Composable
+private fun StatusPill(
+    label: String,
+    active: Boolean
+) {
+    Row(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(
+                if (active) Color(0xFF142A27) else Color(0xFF30251B)
             )
-        }
-
-        fun polygon(vararg values: Float): Path {
-            require(values.size >= 6 && values.size % 2 == 0)
-
-            return Path().apply {
-                moveTo(point(values[0], values[1]).x, point(values[0], values[1]).y)
-
-                var index = 2
-                while (index < values.size) {
-                    val p = point(values[index], values[index + 1])
-                    lineTo(p.x, p.y)
-                    index += 2
-                }
-
-                close()
-            }
-        }
-
-        val metal = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFFD1D9DE),
-                Color(0xFF788695),
-                Color(0xFF303C49),
-                Color(0xFF151D27)
-            ),
-            start = point(-110f, 5f),
-            end = point(110f, 245f)
-        )
-
-        val darkMetal = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF526171),
-                Color(0xFF232D39),
-                Color(0xFF0C121B)
-            ),
-            start = point(-70f, 30f),
-            end = point(70f, 245f)
-        )
-
-        val redMetal = Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFFFF6572),
-                Color(0xFFFF263E),
-                Color(0xFF741728)
-            ),
-            startY = offsetY + 35f * scale,
-            endY = offsetY + 230f * scale
-        )
-
-        // Reactor halo behind the figure.
-        drawCircle(
-            color = Color(0x22FF304A),
-            radius = 108f * scale,
-            center = point(0f, 132f)
-        )
-
-        drawCircle(
-            color = Color(0x44FF304A),
-            radius = 95f * scale,
-            center = point(0f, 132f),
-            style = Stroke(1.2f * scale)
-        )
-
-        drawCircle(
-            color = Color(0x44AAB8C6),
-            radius = 81f * scale,
-            center = point(0f, 132f),
-            style = Stroke(0.7f * scale)
-        )
-
-        // Arms and outer armour.
-        val leftArm = polygon(
-            -58f, 96f,
-            -83f, 98f,
-            -108f, 139f,
-            -99f, 165f,
-            -79f, 169f,
-            -67f, 144f,
-            -43f, 121f
-        )
-
-        val rightArm = polygon(
-            58f, 96f,
-            83f, 98f,
-            108f, 139f,
-            99f, 165f,
-            79f, 169f,
-            67f, 144f,
-            43f, 121f
-        )
-
-        drawPath(leftArm, darkMetal)
-        drawPath(rightArm, darkMetal)
-
-        drawPath(leftArm, Color(0xFF73818F), style = Stroke(1.5f * scale))
-        drawPath(rightArm, Color(0xFF73818F), style = Stroke(1.5f * scale))
-
-        // Main torso.
-        val torso = polygon(
-            -42f, 91f,
-            -69f, 107f,
-            -61f, 207f,
-            -43f, 232f,
-            0f, 250f,
-            43f, 232f,
-            61f, 207f,
-            69f, 107f,
-            42f, 91f,
-            0f, 109f
-        )
-
-        drawPath(torso, darkMetal)
-        drawPath(torso, Color(0xFF8090A0), style = Stroke(1.4f * scale))
-
-        // Shoulder armour plates.
-        val leftShoulder = polygon(
-            -23f, 88f,
-            -58f, 83f,
-            -91f, 104f,
-            -83f, 131f,
-            -51f, 137f,
-            -34f, 118f
-        )
-
-        val rightShoulder = polygon(
-            23f, 88f,
-            58f, 83f,
-            91f, 104f,
-            83f, 131f,
-            51f, 137f,
-            34f, 118f
-        )
-
-        drawPath(leftShoulder, metal)
-        drawPath(rightShoulder, metal)
-
-        drawPath(
-            leftShoulder,
-            Color(0xFFCAD3DA),
-            style = Stroke(1.5f * scale)
-        )
-
-        drawPath(
-            rightShoulder,
-            Color(0xFFCAD3DA),
-            style = Stroke(1.5f * scale)
-        )
-
-        // Neck and neck armour.
-        drawRoundRect(
-            brush = darkMetal,
-            topLeft = point(-18f, 70f),
-            size = Size(36f * scale, 34f * scale),
-            cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f * scale)
-        )
-
-        // Helmet outer silhouette.
-        val helmet = polygon(
-            -24f, 22f,
-            -19f, 9f,
-            0f, 2f,
-            19f, 9f,
-            24f, 22f,
-            29f, 53f,
-            20f, 77f,
-            10f, 91f,
-            -10f, 91f,
-            -20f, 77f,
-            -29f, 53f
-        )
-
-        drawPath(helmet, metal)
-
-        drawPath(
-            helmet,
-            Color(0xFFE1E7EB),
-            style = Stroke(1.7f * scale)
-        )
-
-        // Forehead armour.
-        drawPath(
-            polygon(
-                -13f, 12f,
-                0f, 7f,
-                13f, 12f,
-                8f, 30f,
-                -8f, 30f
-            ),
-            darkMetal
-        )
-
-        // Face plate.
-        drawPath(
-            polygon(
-                -22f, 31f,
-                22f, 31f,
-                18f, 68f,
-                9f, 83f,
-                -9f, 83f,
-                -18f, 68f
-            ),
-            darkMetal
-        )
-
-        // Side helmet guards.
-        for (side in listOf(-1f, 1f)) {
-            val ear = point(side * 25f, 44f)
-
-            drawCircle(
-                color = Color(0xFF17212B),
-                radius = 12f * scale,
-                center = ear
+            .border(
+                1.dp,
+                if (active) Color(0xFF286B54) else Color(0xFF73502D),
+                CircleShape
             )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(if (active) GREEN else ORANGE)
+        )
 
-            drawCircle(
-                color = RED.copy(alpha = .85f),
-                radius = 8f * scale,
-                center = ear,
-                style = Stroke(2.2f * scale)
-            )
-        }
+        Spacer(Modifier.width(7.dp))
 
-        // Eyes.
-        for (side in listOf(-1f, 1f)) {
+        Text(
+            label,
+            color = if (active) GREEN else ORANGE,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = .7.sp
+        )
+    }
+}
 
-            drawPath(
-                polygon(
-                    side * 4f, 40f,
-                    side * 19f, 36f,
-                    side * 14f, 48f,
-                    side * 5f, 49f
+@Composable
+private fun NeuralCore() {
+    val transition = rememberInfiniteTransition(label = "ultron-core")
+
+    val pulse by transition.animateFloat(
+        initialValue = 0.91f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 1500,
+                easing = FastOutSlowInEasing
+            ),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "core-pulse"
+    )
+
+    val rotation by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 9000,
+                easing = LinearEasing
+            ),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "core-rotation"
+    )
+
+    Canvas(
+        modifier = Modifier.size(132.dp)
+    ) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val center = Offset(cx, cy)
+        val radius = size.minDimension * .37f * pulse
+        val ringBounds = Size(radius * 2f, radius * 2f)
+        val ringTopLeft = Offset(cx - radius, cy - radius)
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0x88FF304F),
+                    Color(0x33FF304F),
+                    Color.Transparent
                 ),
-                redMetal
-            )
-
-            drawCircle(
-                color = Color(0xFFFF9CA6),
-                radius = 2f * scale,
-                center = point(side * 12f, 43f)
-            )
-        }
-
-        // Nose ridge and lower mask.
-        drawPath(
-            polygon(
-                -7f, 48f,
-                7f, 48f,
-                5f, 69f,
-                0f, 78f,
-                -5f, 69f
+                center = center,
+                radius = radius * 1.65f
             ),
-            metal
+            radius = radius * 1.65f,
+            center = center
         )
 
-        // Chin plate.
-        drawPath(
-            polygon(
-                -12f, 72f,
-                12f, 72f,
-                9f, 86f,
-                0f, 90f,
-                -9f, 86f
-            ),
-            darkMetal
+        drawCircle(
+            color = Color(0x557D91A5),
+            radius = radius * 1.25f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx())
         )
 
-        // Face ventilation lines.
-        for (i in 0..2) {
-            val y = (57f + i * 5f) * scale
-
-            drawLine(
-                Color(0xFF9CAAB6),
-                point(-15f, y / scale),
-                point(-7f, y / scale + 2f),
-                1.1f * scale
-            )
-
-            drawLine(
-                Color(0xFF9CAAB6),
-                point(15f, y / scale),
-                point(7f, y / scale + 2f),
-                1.1f * scale
-            )
-        }
-
-        // Chest plate.
-        drawPath(
-            polygon(
-                -36f, 107f,
-                0f, 117f,
-                36f, 107f,
-                27f, 180f,
-                0f, 203f,
-                -27f, 180f
-            ),
-            metal
+        drawCircle(
+            color = Color(0x667D91A5),
+            radius = radius * .92f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx())
         )
 
-        drawPath(
-            polygon(
-                -24f, 115f,
-                0f, 123f,
-                24f, 115f,
-                17f, 174f,
-                0f, 189f,
-                -17f, 174f
-            ),
-            darkMetal
+        drawArc(
+            color = RED,
+            startAngle = rotation,
+            sweepAngle = 105f,
+            useCenter = false,
+            topLeft = ringTopLeft,
+            size = ringBounds,
+            style = Stroke(
+                width = 2.4.dp.toPx(),
+                cap = StrokeCap.Round
+            )
         )
 
-        // Red reactor chevrons.
-        for (i in 0..2) {
-            val y = 135f + i * 15f
-
-            drawLine(
-                RED,
-                point(-17f, y),
-                point(0f, y + 8f),
-                3.1f * scale,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round
+        drawArc(
+            color = RED_SOFT.copy(alpha = .75f),
+            startAngle = rotation + 180f,
+            sweepAngle = 55f,
+            useCenter = false,
+            topLeft = Offset(
+                cx - radius * .78f,
+                cy - radius * .78f
+            ),
+            size = Size(radius * 1.56f, radius * 1.56f),
+            style = Stroke(
+                width = 1.5.dp.toPx(),
+                cap = StrokeCap.Round
             )
+        )
 
-            drawLine(
-                RED,
-                point(0f, y + 8f),
-                point(17f, y),
-                3.1f * scale,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round
-            )
-        }
+        drawCircle(
+            color = Color(0xFF172330),
+            radius = radius * .66f,
+            center = center
+        )
 
-        // Shoulder reactor rings.
-        for (side in listOf(-1f, 1f)) {
-            val center = point(side * 70f, 109f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0xFFFF8998),
+                    RED,
+                    Color(0xFF641327)
+                ),
+                center = center,
+                radius = radius * .72f
+            ),
+            radius = radius * .47f,
+            center = center
+        )
 
-            drawCircle(
-                Color(0xFF111924),
-                13f * scale,
-                center
-            )
-
-            drawCircle(
-                RED.copy(alpha = .9f),
-                9f * scale,
-                center,
-                style = Stroke(2.2f * scale)
-            )
-
-            drawCircle(
-                Color(0xFFFF9CA6),
-                2.5f * scale,
-                center
-            )
-        }
-
-        // Metallic highlights.
-        drawLine(
-            Color(0xFFCED7DE),
-            point(-45f, 99f),
-            point(-58f, 123f),
-            1.3f * scale
+        drawCircle(
+            color = Color(0xFFFFD5DA),
+            radius = radius * .12f,
+            center = center
         )
 
         drawLine(
-            Color(0xFFCED7DE),
-            point(45f, 99f),
-            point(58f, 123f),
-            1.3f * scale
-        )
-
-        drawLine(
-            Color(0xFF9CAAB6),
-            point(0f, 17f),
-            point(0f, 31f),
-            1.1f * scale
+            color = Color(0xFFFFB5BF),
+            start = Offset(cx - radius * .22f, cy + radius * .72f),
+            end = Offset(cx + radius * .22f, cy + radius * .72f),
+            strokeWidth = 1.4.dp.toPx(),
+            cap = StrokeCap.Round
         )
     }
 }
 
 @Composable
 private fun UltronMessageBubble(message: ChatMessage) {
+    val user = message.fromUser
 
-    val shape = RoundedCornerShape(
+    val bubbleShape = RoundedCornerShape(
         topStart = 18.dp,
         topEnd = 18.dp,
-        bottomStart = if (message.fromUser) 18.dp else 5.dp,
-        bottomEnd = if (message.fromUser) 5.dp else 18.dp
+        bottomStart = if (user) 18.dp else 5.dp,
+        bottomEnd = if (user) 5.dp else 18.dp
     )
 
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (message.fromUser) {
+        horizontalArrangement = if (user) {
             Arrangement.End
         } else {
             Arrangement.Start
         }
     ) {
-
         Column(
             modifier = Modifier
-                .widthIn(max = 310.dp)
-                .clip(shape)
+                .widthIn(max = 320.dp)
+                .clip(bubbleShape)
                 .background(
-                    if (message.fromUser) {
-                        Color(0xFF2A141D)
-                    } else {
-                        PANEL
-                    }
+                    if (user) Color(0xFF29151E) else PANEL
                 )
                 .border(
                     1.dp,
-                    if (message.fromUser) {
-                        Color(0xFF783144)
-                    } else {
-                        Color(0xFF293644)
-                    },
-                    shape
+                    if (user) Color(0xFF783246) else Color(0xFF2B3B4D),
+                    bubbleShape
                 )
-                .padding(horizontal = 15.dp, vertical = 12.dp)
+                .animateContentSize()
+                .padding(horizontal = 14.dp, vertical = 11.dp)
         ) {
-
             Row(verticalAlignment = Alignment.CenterVertically) {
-
                 Text(
-                    if (message.fromUser) "YOU" else "ULTRON",
-                    color = if (message.fromUser) {
-                        Color(0xFFFFA0AD)
-                    } else {
-                        RED
-                    },
+                    if (user) "YOU" else "ULTRON",
+                    color = if (user) RED_SOFT else RED,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.3.sp
+                    letterSpacing = 1.4.sp
                 )
 
                 Spacer(Modifier.weight(1f))
 
                 Text(
-                    DateFormat.format(
-                        "HH:mm",
-                        Date(message.createdAt)
-                    ).toString(),
+                    DateFormat.format("HH:mm", Date(message.createdAt)).toString(),
                     color = MUTED,
                     fontSize = 9.sp
                 )
@@ -960,7 +850,7 @@ private fun UltronMessageBubble(message: ChatMessage) {
             Spacer(Modifier.height(7.dp))
 
             Text(
-                message.body,
+                text = message.body,
                 color = WHITE,
                 fontSize = 14.sp,
                 lineHeight = 21.sp
@@ -973,45 +863,42 @@ private fun UltronMessageBubble(message: ChatMessage) {
 private fun UltronComposer(
     value: String,
     onValueChange: (String) -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    isSending: Boolean
 ) {
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 15.dp, vertical = 10.dp)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
             .clip(CircleShape)
             .background(PANEL)
-            .border(
-                1.dp,
-                Color(0xFF344253),
-                CircleShape
-            )
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .border(1.dp, Color(0xFF34465A), CircleShape)
+            .padding(horizontal = 9.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-
         Box(
             modifier = Modifier
-                .size(38.dp)
+                .size(37.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF202A38)),
+                .background(Color(0xFF202B39)),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                "+",
-                color = MUTED,
-                fontSize = 22.sp
+                "U",
+                color = RED_SOFT,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black
             )
         }
 
-        Spacer(Modifier.width(9.dp))
+        Spacer(Modifier.width(10.dp))
 
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier.weight(1f),
             singleLine = true,
+            enabled = !isSending,
             textStyle = TextStyle(
                 color = WHITE,
                 fontSize = 14.sp
@@ -1027,7 +914,7 @@ private fun UltronComposer(
                 Box {
                     if (value.isEmpty()) {
                         Text(
-                            "Message ULTRON...",
+                            if (isSending) "ULTRON is thinking..." else "Message ULTRON...",
                             color = MUTED,
                             fontSize = 13.sp
                         )
@@ -1037,24 +924,27 @@ private fun UltronComposer(
             }
         )
 
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(9.dp))
 
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(43.dp)
                 .clip(CircleShape)
                 .background(
-                    if (value.isNotBlank()) RED else Color(0xFF343944)
+                    if (value.isNotBlank() && !isSending) RED
+                    else Color(0xFF343E4B)
                 )
-                .clickable(enabled = value.isNotBlank()) {
+                .clickable(
+                    enabled = value.isNotBlank() && !isSending
+                ) {
                     onSend()
                 },
             contentAlignment = Alignment.Center
         ) {
             Text(
-                "➤",
+                if (isSending) "…" else "➤",
                 color = WHITE,
-                fontSize = 21.sp,
+                fontSize = 19.sp,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -1063,80 +953,118 @@ private fun UltronComposer(
 
 @Composable
 private fun UltronSettingsDialog(
+    currentBaseUrl: String,
+    currentApiKey: String,
+    onSave: (String, String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var url by remember(currentBaseUrl) {
+        mutableStateOf(currentBaseUrl)
+    }
+
+    var key by remember(currentApiKey) {
+        mutableStateOf(currentApiKey)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF151D28),
+        containerColor = Color(0xFF151F2B),
         title = {
-            Text(
-                "SYSTEM CONFIGURATION",
-                color = WHITE,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.2.sp
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(15.dp)) {
-
-                SettingsRow(
-                    "CLOUD API",
-                    "Not connected"
-                )
-
-                SettingsRow(
-                    "AI ENGINE",
-                    "Qwen3.5-9B planned"
-                )
-
-                SettingsRow(
-                    "INTERFACE",
-                    "Dark metallic"
-                )
-
-                SettingsRow(
-                    "CHAT HISTORY",
-                    "Saved on this device"
+            Column {
+                Text(
+                    "SYSTEM CONFIGURATION",
+                    color = WHITE,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.2.sp
                 )
 
                 Text(
-                    "No Google credentials, private model weights or API tokens are bundled in this APK.",
+                    "Connect ULTRON to your Colab Qwen backend",
                     color = MUTED,
-                    fontSize = 11.sp,
-                    lineHeight = 17.sp
+                    fontSize = 11.sp
+                )
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "HTTPS API URL",
+                    color = RED_SOFT,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            "https://your-tunnel.trycloudflare.com",
+                            fontSize = 11.sp
+                        )
+                    },
+                    textStyle = TextStyle(
+                        color = WHITE,
+                        fontSize = 12.sp
+                    )
+                )
+
+                Text(
+                    "API KEY",
+                    color = RED_SOFT,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+
+                OutlinedTextField(
+                    value = key,
+                    onValueChange = { key = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    placeholder = {
+                        Text(
+                            "Paste your Colab API key",
+                            fontSize = 11.sp
+                        )
+                    },
+                    textStyle = TextStyle(
+                        color = WHITE,
+                        fontSize = 12.sp
+                    )
+                )
+
+                Text(
+                    "The API key is stored in this app's private preferences. It is not encrypted with Android Keystore.",
+                    color = MUTED,
+                    fontSize = 10.sp,
+                    lineHeight = 15.sp
                 )
             }
         },
         confirmButton = {
+            TextButton(
+                onClick = { onSave(url, key) },
+                enabled = url.trim().startsWith("https://") && key.isNotBlank()
+            ) {
+                Text(
+                    "SAVE CONFIGURATION",
+                    color = RED_SOFT,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("CLOSE", color = RED)
+                Text("CANCEL", color = MUTED)
             }
         }
     )
-}
-
-@Composable
-private fun SettingsRow(
-    title: String,
-    value: String
-) {
-    Column {
-        Text(
-            title,
-            color = MUTED,
-            fontSize = 9.sp,
-            letterSpacing = 1.2.sp
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        Text(
-            value,
-            color = WHITE,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium
-        )
-    }
 }
